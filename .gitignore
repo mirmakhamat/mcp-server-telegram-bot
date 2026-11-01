@@ -4,5 +4,3 @@ __pycache__/
 *.egg-info/
 dist/
 .pytest_cache/
-# local agent notes, may hold personal details
-CLAUDE.md
