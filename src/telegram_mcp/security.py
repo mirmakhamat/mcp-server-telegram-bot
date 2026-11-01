@@ -1,6 +1,6 @@
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 MAX_BYTES = 50 * 1024 * 1024  # Bot API upload limit
 BLOCKED_DIRS = {".ssh", ".gnupg", ".aws"}
@@ -19,6 +19,24 @@ class Config:
     token: str
     chat_ids: tuple[str, ...]
     dirs: tuple[str, ...]
+    names: dict = field(default_factory=dict)  # lowercase name -> chat id
+
+
+def parse_chat(entry: str) -> tuple[str | None, str]:
+    """'ali=123' -> ('ali', '123'); '123' -> (None, '123')."""
+    name, sep, cid = entry.rpartition("=")
+    return (name.strip() or None, cid.strip()) if sep else (None, entry.strip())
+
+
+def _chats(entries) -> tuple[tuple[str, ...], dict]:
+    ids, names = [], {}
+    for e in entries:
+        name, cid = parse_chat(e)
+        if cid not in ids:
+            ids.append(cid)
+        if name:
+            names[name.lower()] = cid
+    return tuple(ids), names
 
 
 def _split(value: str) -> tuple[str, ...]:
@@ -27,21 +45,23 @@ def _split(value: str) -> tuple[str, ...]:
 
 def load_config(env=os.environ) -> Config:
     token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_ids = _split(env.get("ALLOWED_CHAT_IDS", ""))
+    chat_ids, names = _chats(_split(env.get("ALLOWED_CHAT_IDS", "")))
     if not token:
         raise ConfigError("TELEGRAM_BOT_TOKEN is not set")
     if not chat_ids:
         raise ConfigError("ALLOWED_CHAT_IDS is not set")
     dirs = tuple(os.path.realpath(os.path.expanduser(d)) for d in _split(env.get("ALLOWED_DIRS", "")))
-    return Config(token, chat_ids, dirs)
+    return Config(token, chat_ids, dirs, names)
 
 
 def resolve_chat(cfg: Config, chat_id: str | int | None) -> str:
     if chat_id is None or str(chat_id) == "":
         return cfg.chat_ids[0]
-    if str(chat_id) not in cfg.chat_ids:
-        raise DeniedError("chat_id is not in ALLOWED_CHAT_IDS")
-    return str(chat_id)
+    key = str(chat_id).strip()
+    key = cfg.names.get(key.lower(), key)
+    if key not in cfg.chat_ids:
+        raise DeniedError("chat is not in ALLOWED_CHAT_IDS")
+    return key
 
 
 def check_path(cfg: Config, path: str) -> str:
@@ -81,9 +101,10 @@ def save_extra(path: str, extra: dict) -> None:
 
 
 def merge(base: Config, extra: dict) -> Config:
-    chats = base.chat_ids + tuple(c for c in extra["chats"] if c not in base.chat_ids)
+    ids, names = _chats(extra["chats"])
+    chats = base.chat_ids + tuple(c for c in ids if c not in base.chat_ids)
     dirs = base.dirs + tuple(d for d in extra["dirs"] if d not in base.dirs)
-    return Config(base.token, chats, dirs)
+    return Config(base.token, chats, dirs, {**names, **base.names})
 
 
 def validate_chat(chat_id: str) -> str:
@@ -91,6 +112,13 @@ def validate_chat(chat_id: str) -> str:
     if not c.lstrip("-").isdigit():
         raise DeniedError("chat_id must be a numeric id")
     return c
+
+
+def validate_name(name: str) -> str:
+    n = name.strip()
+    if not n.replace("_", "").replace("-", "").isalnum():
+        raise DeniedError("name may contain only letters, digits, _ and -")
+    return n
 
 
 def validate_dir(path: str) -> str:

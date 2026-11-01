@@ -131,3 +131,24 @@ def test_approve_fails_closed():
     for ctx in (Ctx(NS(action="decline", data=None)), Ctx(NS(action="accept", data=NS(confirm=False))), Ctx(exc=RuntimeError())):
         with pytest.raises(security.DeniedError):
             asyncio.run(server._approve(ctx, "x"))
+
+
+def test_chat_names(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_MCP_STATE", str(tmp_path / "state.json"))
+    from telegram_mcp import server
+
+    server._base = security.load_config(
+        {"TELEGRAM_BOT_TOKEN": TOKEN, "ALLOWED_CHAT_IDS": "me=1,2", "ALLOWED_DIRS": ""}
+    )
+    server._edit("chats", "ali=77", True)
+    c = server.cfg()
+    assert security.resolve_chat(c, "Ali") == "77"
+    assert security.resolve_chat(c, "me") == "1"
+    assert security.resolve_chat(c, None) == "1"
+    assert server.remove_chat("ali") == "removed chat ali=77"
+    with pytest.raises(security.DeniedError):
+        security.resolve_chat(server.cfg(), "ali")
+    with pytest.raises(security.DeniedError):
+        server.remove_chat("me")
+    with pytest.raises(security.DeniedError):
+        security.validate_name("a b=c")

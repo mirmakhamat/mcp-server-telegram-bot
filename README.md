@@ -22,12 +22,17 @@ Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the
 | Variable | Meaning |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Bot token (required) |
-| `ALLOWED_CHAT_IDS` | Comma-separated chat ids; first is default (required) |
+| `ALLOWED_CHAT_IDS` | Comma-separated chats, each `id` or `name=id` (e.g. `me=111,ali=222`); first is default (required) |
 | `ALLOWED_DIRS` | Comma-separated directories files may be sent from. Empty = file sending disabled |
+
+## Typical use
+- "Send `report.pdf` to me when you finish" -> `send_document(path)` to the default chat.
+- "Send the result to Ali" -> `send_message(text, chat_id="ali")`.
+- A person can only receive messages after they open the bot and press Start. Telegram blocks the bot otherwise.
 
 ## Tools
 `send_message(text, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `get_updates(limit?)`
-Access management: `list_access()`, `add_chat(chat_id)`, `add_dir(path)`, `remove_chat(chat_id)`, `remove_dir(path)`
+Access management: `list_access()`, `add_chat(chat_id, name?)`, `add_dir(path)`, `remove_chat(chat)`, `remove_dir(path)`
 
 ## Safety
 - Other chat ids are rejected.

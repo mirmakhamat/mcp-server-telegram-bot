@@ -22,7 +22,7 @@ def cfg() -> security.Config:
 
 @mcp.tool()
 async def send_message(text: str, chat_id: str | None = None) -> str:
-    """Send a text message to an allowed Telegram chat."""
+    """Send a text message. chat_id is an allowed id or name (see list_access); omitted = default chat."""
     c = cfg()
     r = await telegram.call(c.token, "sendMessage", {"chat_id": security.resolve_chat(c, chat_id), "text": text})
     return f"sent, message_id={r['message_id']}"
@@ -91,18 +91,25 @@ def _edit(kind: str, value: str, add: bool) -> str:
 
 @mcp.tool()
 def list_access() -> dict:
-    """Show allowed chat ids and directories."""
+    """Show allowed chats (id and name) and directories. Use names as chat_id when sending."""
     extra = security.load_extra(security.state_path())
     c = cfg()
-    return {"chat_ids": list(c.chat_ids), "dirs": list(c.dirs), "added_at_runtime": extra}
+    by_id = {v: k for k, v in c.names.items()}
+    return {
+        "chats": [{"id": i, "name": by_id.get(i)} for i in c.chat_ids],
+        "dirs": list(c.dirs),
+        "added_at_runtime": extra,
+    }
 
 
 @mcp.tool()
-async def add_chat(chat_id: str, ctx: Context) -> str:
-    """Allow another chat id (asks the user to confirm)."""
+async def add_chat(chat_id: str, ctx: Context, name: str | None = None) -> str:
+    """Allow another chat id, optionally with a name (e.g. "ali") usable as chat_id later. Asks the user to confirm."""
     cid = security.validate_chat(chat_id)
-    await _approve(ctx, f"send messages to chat {cid}")
-    return f"added chat {_edit('chats', cid, True)}"
+    entry = f"{security.validate_name(name)}={cid}" if name else cid
+    await _approve(ctx, f"send messages to chat {entry}")
+    _edit("chats", entry, True)
+    return f"added chat {entry}"
 
 
 @mcp.tool()
@@ -114,9 +121,14 @@ async def add_dir(path: str, ctx: Context) -> str:
 
 
 @mcp.tool()
-def remove_chat(chat_id: str) -> str:
-    """Remove a chat id that was added at runtime."""
-    return f"removed chat {_edit('chats', security.validate_chat(chat_id), False)}"
+def remove_chat(chat: str) -> str:
+    """Remove a chat (id or name) that was added at runtime."""
+    for e in security.load_extra(security.state_path())["chats"]:
+        name, cid = security.parse_chat(e)
+        if chat.strip() in (cid, name):
+            _edit("chats", e, False)
+            return f"removed chat {e}"
+    raise security.DeniedError("not a runtime-added entry (env entries are changed in the environment)")
 
 
 @mcp.tool()
