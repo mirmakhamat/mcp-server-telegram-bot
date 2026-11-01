@@ -82,3 +82,9 @@ def test_error_hides_token():
     with pytest.raises(telegram.TelegramError) as e:
         asyncio.run(run())
     assert "secret-token" not in str(e.value)
+
+
+def test_httpx_logger_silenced():
+    import logging
+
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING

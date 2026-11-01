@@ -1,4 +1,9 @@
+import logging
+
 import httpx
+
+# httpx logs full request URLs at INFO, and the URL contains the bot token
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class TelegramError(Exception):
