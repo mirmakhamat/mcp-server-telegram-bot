@@ -27,12 +27,19 @@ Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the
 
 ## Tools
 `send_message(text, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `get_updates(limit?)`
+Access management: `list_access()`, `add_chat(chat_id)`, `add_dir(path)`, `remove_chat(chat_id)`, `remove_dir(path)`
 
 ## Safety
 - Other chat ids are rejected.
 - Paths are resolved with `realpath` (blocks `..` and symlinks) and must be inside `ALLOWED_DIRS`.
 - `.env*`, `.ssh`, `.gnupg`, `.aws` are never sent. Max file size 50 MB.
 - Use one bot per user: two programs polling `getUpdates` on one bot interfere.
+
+## Changing access from the agent
+- `add_chat` / `add_dir` ask the user to confirm (MCP elicitation). If the client cannot ask, the call is refused.
+- `/` and the home directory cannot be added. Protected dirs stay blocked.
+- Additions are saved in `~/.config/telegram-mcp/state.json` (override with `TELEGRAM_MCP_STATE`).
+- `remove_*` only removes runtime additions. Env entries are changed in the environment.
 
 ## Development
 ```

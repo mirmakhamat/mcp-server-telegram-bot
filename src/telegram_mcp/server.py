@@ -1,18 +1,23 @@
 import sys
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
+from pydantic import BaseModel
 
 from . import security, telegram
 
 mcp = FastMCP("telegram")
-_cfg: security.Config | None = None
+_base: security.Config | None = None
+
+
+def base() -> security.Config:
+    global _base
+    if _base is None:
+        _base = security.load_config()
+    return _base
 
 
 def cfg() -> security.Config:
-    global _cfg
-    if _cfg is None:
-        _cfg = security.load_config()
-    return _cfg
+    return security.merge(base(), security.load_extra(security.state_path()))
 
 
 @mcp.tool()
@@ -56,9 +61,73 @@ async def get_updates(limit: int = 10) -> list[dict]:
     ]
 
 
+class Confirm(BaseModel):
+    confirm: bool = False
+
+
+async def _approve(ctx: Context, what: str) -> None:
+    """Widening access needs a human yes. Fails closed if the client cannot ask."""
+    try:
+        r = await ctx.elicit(f"Allow telegram-mcp to {what}?", Confirm)
+    except Exception:
+        raise security.DeniedError("client cannot ask for confirmation; set it in the environment instead") from None
+    if r.action != "accept" or not r.data.confirm:
+        raise security.DeniedError("not approved")
+
+
+def _edit(kind: str, value: str, add: bool) -> str:
+    path = security.state_path()
+    extra = security.load_extra(path)
+    items = extra[kind]
+    if add and value not in items:
+        items.append(value)
+    elif not add:
+        if value not in items:
+            raise security.DeniedError("not a runtime-added entry (env entries are changed in the environment)")
+        items.remove(value)
+    security.save_extra(path, extra)
+    return value
+
+
+@mcp.tool()
+def list_access() -> dict:
+    """Show allowed chat ids and directories."""
+    extra = security.load_extra(security.state_path())
+    c = cfg()
+    return {"chat_ids": list(c.chat_ids), "dirs": list(c.dirs), "added_at_runtime": extra}
+
+
+@mcp.tool()
+async def add_chat(chat_id: str, ctx: Context) -> str:
+    """Allow another chat id (asks the user to confirm)."""
+    cid = security.validate_chat(chat_id)
+    await _approve(ctx, f"send messages to chat {cid}")
+    return f"added chat {_edit('chats', cid, True)}"
+
+
+@mcp.tool()
+async def add_dir(path: str, ctx: Context) -> str:
+    """Allow files from another directory (asks the user to confirm)."""
+    real = security.validate_dir(path)
+    await _approve(ctx, f"send files from {real}")
+    return f"added dir {_edit('dirs', real, True)}"
+
+
+@mcp.tool()
+def remove_chat(chat_id: str) -> str:
+    """Remove a chat id that was added at runtime."""
+    return f"removed chat {_edit('chats', security.validate_chat(chat_id), False)}"
+
+
+@mcp.tool()
+def remove_dir(path: str) -> str:
+    """Remove a directory that was added at runtime."""
+    return f"removed dir {_edit('dirs', security.validate_dir(path), False)}"
+
+
 def main() -> None:
     try:
-        cfg()
+        base()
     except security.ConfigError as e:
         sys.exit(f"telegram-mcp: {e}")
     mcp.run()

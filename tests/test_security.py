@@ -88,3 +88,46 @@ def test_httpx_logger_silenced():
     import logging
 
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+
+
+def test_extra_merge_and_validation(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_MCP_STATE", str(tmp_path / "s" / "state.json"))
+    from telegram_mcp import server
+
+    server._base = cfg(tmp_path)
+    d = tmp_path / "more"
+    d.mkdir()
+    assert server._edit("chats", "7", True) == "7"
+    assert server._edit("dirs", str(d), True) == str(d)
+    c = server.cfg()
+    assert "7" in c.chat_ids and str(d) in c.dirs
+    server._edit("chats", "7", False)
+    assert "7" not in server.cfg().chat_ids
+    with pytest.raises(security.DeniedError):
+        server._edit("chats", "1", False)  # env entry cannot be removed
+    for bad in ("/", os.path.expanduser("~"), str(tmp_path / "nope")):
+        with pytest.raises(security.DeniedError):
+            security.validate_dir(bad)
+    with pytest.raises(security.DeniedError):
+        security.validate_chat("abc")
+
+
+def test_approve_fails_closed():
+    from types import SimpleNamespace as NS
+
+    from telegram_mcp import server
+
+    class Ctx:
+        def __init__(self, r=None, exc=None):
+            self.r, self.exc = r, exc
+
+        async def elicit(self, *a):
+            if self.exc:
+                raise self.exc
+            return self.r
+
+    ok = NS(action="accept", data=NS(confirm=True))
+    asyncio.run(server._approve(Ctx(ok), "x"))
+    for ctx in (Ctx(NS(action="decline", data=None)), Ctx(NS(action="accept", data=NS(confirm=False))), Ctx(exc=RuntimeError())):
+        with pytest.raises(security.DeniedError):
+            asyncio.run(server._approve(ctx, "x"))
