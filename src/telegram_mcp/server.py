@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -14,6 +15,8 @@ from pydantic import BaseModel
 from . import pdf, redact, security, telegram, text as txt
 
 FORMATS = ("pdf", "md", "txt", "csv", "json")
+ALBUM_KINDS = ("photo", "video", "document")
+PHOTO_MAX_BYTES = 10 * 1024 * 1024
 mcp = FastMCP("telegram")
 _base: security.Config | None = None
 
@@ -71,20 +74,23 @@ def _throttle(c: security.Config) -> None:
     _sent_at.append(now)
 
 
-def _flags(silent: bool) -> dict:
-    return {"disable_notification": True} if silent else {}
+def _flags(silent: bool = False, thread_id: int | None = None) -> dict:
+    return {**({"disable_notification": True} if silent else {}), **({"message_thread_id": thread_id} if thread_id else {})}
 
 
-def _data(c: security.Config, chat: str, caption: str | None = None, silent: bool = False) -> dict:
+def _data(c: security.Config, chat: str, caption: str | None = None, silent: bool = False, thread_id: int | None = None) -> dict:
     caption = txt.clip_caption(_clean(c, caption)) if caption else None
-    return {"chat_id": chat, **({"caption": caption} if caption else {}), **_flags(silent)}
+    return {"chat_id": chat, **({"caption": caption} if caption else {}), **_flags(silent, thread_id)}
 
 
 @mcp.tool()
-async def send_message(text: str, chat_id: str | None = None, parse_mode: str | None = None, silent: bool = False) -> str:
+async def send_message(
+    text: str, chat_id: str | None = None, parse_mode: str | None = None, silent: bool = False,
+    thread_id: int | None = None
+) -> str:
     """Send a text message; long text is split into several messages. chat_id is an allowed id or name
     (see list_access); omitted = default chat. parse_mode (MarkdownV2 or HTML) applies only when the text fits one message.
-    silent = deliver without a notification sound."""
+    silent = deliver without a notification sound. thread_id = topic id in a forum group."""
     if not text.strip():
         raise ValueError("text is empty")
     if parse_mode not in (None, *txt.PARSE_MODES):
@@ -96,7 +102,7 @@ async def send_message(text: str, chat_id: str | None = None, parse_mode: str | 
     ids = []
     for chunk in chunks:
         extra = {"parse_mode": parse_mode} if parse_mode and len(chunks) == 1 else {}
-        r = await telegram.call(c.token, "sendMessage", {"chat_id": chat, "text": chunk, **extra, **_flags(silent)})
+        r = await telegram.call(c.token, "sendMessage", {"chat_id": chat, "text": chunk, **extra, **_flags(silent, thread_id)})
         ids.append(r["message_id"])
     _log(chat, f"message chars={len(text)} parts={len(ids)}")
     return f"sent {len(ids)} message(s), message_id={ids[-1]}"
@@ -130,19 +136,30 @@ def _log(chat: str, what: str) -> None:
         pass  # logging must never block a send
 
 
+async def _vet(ctx: Context, c: security.Config, chat: str, paths: list[str]) -> list[str]:
+    """Check every file (protected? secrets? size?) and ask once for those outside the allowed roots."""
+    reals = [security.check_path(c, p) for p in paths]
+    for real in reals:
+        _scan_file(c, real)
+    outside = [r for r in reals if not security.is_inside(c, r)]
+    if outside:
+        if c.mode == "strict":
+            raise security.DeniedError("file is outside the session directory and ALLOWED_DIRS (ACCESS_MODE=strict)")
+        await _approve(ctx, f"send {', '.join(outside)} to chat {chat}")
+    return reals
+
+
 async def _send_file(
-    ctx: Context, method: str, field: str, path: str, caption: str | None, chat_id: str | None, silent: bool = False
+    ctx: Context, method: str, field: str, path: str, caption: str | None, chat_id: str | None,
+    silent: bool = False, thread_id: int | None = None,
 ) -> str:
     c = cfg()
     chat = security.resolve_chat(c, chat_id)
     _throttle(c)
-    real = security.check_path(c, path)
-    _scan_file(c, real)
-    if not security.is_inside(c, real):
-        if c.mode == "strict":
-            raise security.DeniedError("file is outside the session directory and ALLOWED_DIRS (ACCESS_MODE=strict)")
-        await _approve(ctx, f"send {real} to chat {chat}")
-    data = _data(c, chat, caption, silent)
+    (real,) = await _vet(ctx, c, chat, [path])
+    if method == "sendPhoto" and os.path.getsize(real) > PHOTO_MAX_BYTES:
+        method, field = "sendDocument", "document"  # Telegram refuses photos above 10 MB
+    data = _data(c, chat, caption, silent, thread_id)
     with open(real, "rb") as f:
         r = await telegram.call(c.token, method, data, {field: f})
     _log(chat, f"file={real}")
@@ -151,23 +168,69 @@ async def _send_file(
 
 @mcp.tool()
 async def send_document(
-    ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None, silent: bool = False
+    ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None, silent: bool = False,
+    thread_id: int | None = None,
 ) -> str:
     """Send an existing file. Files in the session directory send directly; elsewhere the user is asked. Secrets (.ssh, .env, keys) are always refused."""
-    return await _send_file(ctx, "sendDocument", "document", path, caption, chat_id, silent)
+    return await _send_file(ctx, "sendDocument", "document", path, caption, chat_id, silent, thread_id)
 
 
 @mcp.tool()
 async def send_photo(
-    ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None, silent: bool = False
+    ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None, silent: bool = False,
+    thread_id: int | None = None,
 ) -> str:
-    """Send an existing image as a photo. Same access rules as send_document."""
-    return await _send_file(ctx, "sendPhoto", "photo", path, caption, chat_id, silent)
+    """Send an existing image as a photo (as a document if it is over 10 MB). Same access rules as send_document."""
+    return await _send_file(ctx, "sendPhoto", "photo", path, caption, chat_id, silent, thread_id)
+
+
+@mcp.tool()
+async def send_video(
+    ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None, silent: bool = False,
+    thread_id: int | None = None,
+) -> str:
+    """Send an existing video (mp4 plays inline). Same access rules as send_document."""
+    return await _send_file(ctx, "sendVideo", "video", path, caption, chat_id, silent, thread_id)
+
+
+@mcp.tool()
+async def send_audio(
+    ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None, silent: bool = False,
+    thread_id: int | None = None,
+) -> str:
+    """Send an existing audio file (mp3/m4a show a player). Same access rules as send_document."""
+    return await _send_file(ctx, "sendAudio", "audio", path, caption, chat_id, silent, thread_id)
+
+
+@mcp.tool()
+async def send_album(
+    ctx: Context, paths: list[str], kind: str = "photo", caption: str | None = None, chat_id: str | None = None,
+    silent: bool = False, thread_id: int | None = None,
+) -> str:
+    """Send 2-10 files as one album. kind: photo, video or document (all files must be of that kind).
+    The caption goes on the first item. Same access rules as send_document."""
+    if kind not in ALBUM_KINDS:
+        raise ValueError(f"kind must be one of: {', '.join(ALBUM_KINDS)}")
+    if not 2 <= len(paths) <= 10:
+        raise ValueError("an album needs 2-10 files")
+    c = cfg()
+    chat = security.resolve_chat(c, chat_id)
+    _throttle(c)
+    reals = await _vet(ctx, c, chat, paths)
+    cap = txt.clip_caption(_clean(c, caption)) if caption else None
+    media = [{"type": kind, "media": f"attach://f{i}", **({"caption": cap} if cap and i == 0 else {})} for i in range(len(reals))]
+    data = {"chat_id": chat, "media": json.dumps(media), **_flags(silent, thread_id)}
+    with contextlib.ExitStack() as stack:
+        files = {f"f{i}": stack.enter_context(open(r, "rb")) for i, r in enumerate(reals)}
+        r = await telegram.call(c.token, "sendMediaGroup", data, files)
+    _log(chat, f"album={len(reals)} files: " + ", ".join(reals))
+    return f"sent album of {len(r)}, message_ids={[m['message_id'] for m in r]}"
 
 
 @mcp.tool()
 async def send_generated(
-    name: str, content: str, format: str = "pdf", caption: str | None = None, chat_id: str | None = None, silent: bool = False
+    name: str, content: str, format: str = "pdf", caption: str | None = None, chat_id: str | None = None, silent: bool = False,
+    thread_id: int | None = None,
 ) -> str:
     """Create a file from text and send it; reads nothing from disk. format: pdf, md, txt, csv, json.
     For a pdf, '# ' / '## ' lines are headings and '- ' lines are bullets. Use it for reports, summaries, logs, tables."""
@@ -182,7 +245,7 @@ async def send_generated(
     body = pdf.render(content, title=name if format == "pdf" else None) if format == "pdf" else content.encode()
     if len(body) > security.MAX_BYTES:
         raise security.DeniedError("file is larger than 50 MB")
-    data = _data(c, chat, caption, silent)
+    data = _data(c, chat, caption, silent, thread_id)
     r = await telegram.call(c.token, "sendDocument", data, {"document": (filename, body)})
     _log(chat, f"generated={filename} bytes={len(body)}")
     return f"sent {filename}, message_id={r['message_id']}"

@@ -630,3 +630,108 @@ def test_429_long_wait_and_second_flood_are_reported(monkeypatch):
     with pytest.raises(telegram.TelegramError, match="429"):
         asyncio.run(telegram.call(TOKEN, "sendMessage", client=_tg_client([short, short], seen)))
     assert len(seen) == 2 and sleeps == [1]  # retried once only
+
+
+def test_video_audio_photo_fallback_and_thread(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    server, sent = _server(tmp_path, monkeypatch)
+    f = tmp_path / "m.bin"
+    f.write_bytes(b"data")
+    asyncio.run(server.send_video(NS(), str(f), thread_id=5))
+    asyncio.run(server.send_audio(NS(), str(f)))
+    asyncio.run(server.send_photo(NS(), str(f)))
+    assert [m for m, _, _ in sent] == ["sendVideo", "sendAudio", "sendPhoto"]
+    assert [list(fl) for _, _, fl in sent] == [["video"], ["audio"], ["photo"]]
+    assert sent[0][1]["message_thread_id"] == 5 and "message_thread_id" not in sent[1][1]
+    monkeypatch.setattr(server, "PHOTO_MAX_BYTES", 2)
+    asyncio.run(server.send_photo(NS(), str(f)))
+    assert sent[-1][0] == "sendDocument" and list(sent[-1][2]) == ["document"]
+
+
+def test_thread_id_everywhere(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    server, sent = _server(tmp_path, monkeypatch)
+    f = tmp_path / "a.txt"
+    f.write_text("x")
+    asyncio.run(server.send_message("m", thread_id=3))
+    asyncio.run(server.send_document(NS(), str(f), thread_id=3))
+    asyncio.run(server.send_generated("r", "x", "md", thread_id=3))
+    assert [d["message_thread_id"] for _, d, _ in sent] == [3, 3, 3]
+
+
+def test_album(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    server, sent = _server(tmp_path, monkeypatch)
+    files = []
+    for n in "abc":
+        p = tmp_path / f"{n}.jpg"
+        p.write_bytes(b"img" + n.encode())
+        files.append(str(p))
+
+    async def album_ok(token, method, data=None, files=None, client=None):
+        sent.append((method, data, files))
+        return [{"message_id": i} for i in range(len(files))]
+
+    monkeypatch.setattr(server.telegram, "call", album_ok)
+    out = asyncio.run(server.send_album(NS(), files, caption="trip", silent=True, thread_id=2))
+    assert out == "sent album of 3, message_ids=[0, 1, 2]"
+    method, data, fl = sent[-1]
+    media = json.loads(data["media"])
+    assert method == "sendMediaGroup" and list(fl) == ["f0", "f1", "f2"]
+    assert [m["media"] for m in media] == ["attach://f0", "attach://f1", "attach://f2"]
+    assert media[0]["caption"] == "trip" and "caption" not in media[1] and media[0]["type"] == "photo"
+    assert data["disable_notification"] is True and data["message_thread_id"] == 2
+    for bad in (dict(paths=files[:1]), dict(paths=files * 4), dict(paths=files, kind="gif")):
+        with pytest.raises(ValueError):
+            asyncio.run(server.send_album(NS(), **bad))
+
+
+def test_album_vetting_is_all_or_nothing(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    server, sent = _server(tmp_path, monkeypatch, "block")
+    ok = tmp_path / "ok.jpg"
+    ok.write_bytes(b"x")
+    env = tmp_path / ".env"
+    env.write_text("x")
+    with pytest.raises(security.DeniedError):
+        asyncio.run(server.send_album(NS(), [str(ok), str(env)]))  # one protected file blocks the whole album
+    leaky = tmp_path / "n.txt"
+    leaky.write_text("password = Sup3rS3cret!")
+    with pytest.raises(security.DeniedError):
+        asyncio.run(server.send_album(NS(), [str(ok), str(leaky)], kind="document"))
+    assert sent == []
+
+
+def test_album_asks_once_for_outside_files(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    server, sent = _server(tmp_path, monkeypatch)
+    work = tmp_path / "work"
+    work.mkdir()
+    server._base = security.load_config({"TELEGRAM_BOT_TOKEN": TOKEN, "ALLOWED_CHAT_IDS": "1"}, cwd=str(work))
+    inside = work / "i.jpg"
+    inside.write_bytes(b"x")
+    out1, out2 = tmp_path / "o1.jpg", tmp_path / "o2.jpg"
+    out1.write_bytes(b"x")
+    out2.write_bytes(b"x")
+
+    class Ctx:
+        asked = 0
+
+        async def elicit(self, *a):
+            Ctx.asked += 1
+            return NS(action="accept", data=NS(confirm=True))
+
+    async def album_ok(token, method, data=None, files=None, client=None):
+        return [{"message_id": 1}, {"message_id": 2}, {"message_id": 3}]
+
+    monkeypatch.setattr(server.telegram, "call", album_ok)
+    asyncio.run(server.send_album(Ctx(), [str(inside), str(out1), str(out2)]))
+    assert Ctx.asked == 1
+    Ctx.asked = 0
+    asyncio.run(server.send_album(Ctx(), [str(inside), str(inside)]))
+    assert Ctx.asked == 0
