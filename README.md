@@ -9,15 +9,37 @@ The token is read from the environment and never reaches the agent.
 3. Install and register (replace the placeholders):
 
 ```
-claude mcp add telegram \
+claude mcp add --scope user telegram \
   -e TELEGRAM_BOT_TOKEN=<token> \
   -e ALLOWED_CHAT_IDS=<chat_id> \
   -- uvx mcp-server-telegram-bot
 ```
 
-Add `--scope user` to make it available in every folder.
+`--scope user` makes it available in every folder.
 
 Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the agent to run `get_updates`, then re-register with the real id.
+
+## Other MCP clients
+It is a standard MCP server over stdio, so any MCP client can run it (Claude Desktop, Cursor, VS Code, Codex CLI, Gemini CLI, Cline and others). Add it to the client's MCP settings; most use this shape (the file name and format differ per client, some use TOML):
+
+```json
+{
+  "mcpServers": {
+    "telegram": {
+      "command": "uvx",
+      "args": ["mcp-server-telegram-bot"],
+      "env": { "TELEGRAM_BOT_TOKEN": "<token>", "ALLOWED_CHAT_IDS": "<chat_id>" }
+    }
+  }
+}
+```
+
+Differences between clients:
+- **Session directory.** Files in the folder the client starts the server in are sent without asking. Some clients start it in `/` or your home folder; then nothing is allowed automatically. Set `ALLOWED_DIRS` to the folders you work in.
+- **Confirmation prompts.** Sending a file from outside the allowed folders, `add_chat` and `add_dir` ask you to confirm. A client that cannot show such prompts gets a refusal instead, so nothing is allowed silently. Use `ALLOWED_DIRS`, `ALLOWED_CHAT_IDS` or `ACCESS_MODE=strict` in that case.
+- **Hooks.** `notify --hook` reads the JSON that Claude Code passes to hooks. In other tools call `mcp-server-telegram-bot notify "text"` from their own hook or from a script.
+
+Only Claude Code has been tested so far.
 
 ## Environment
 | Variable | Meaning |
