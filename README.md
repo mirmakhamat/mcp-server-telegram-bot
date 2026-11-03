@@ -15,7 +15,7 @@ claude mcp add telegram \
   -- uvx mcp-server-telegram-bot
 ```
 
-Use `--scope user` so it works in every folder. When running from a checkout use `uv run --project <dir>` (not `--directory`), otherwise the server cannot see the session directory.
+Add `--scope user` to make it available in every folder.
 
 Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the agent to run `get_updates`, then re-register with the real id.
 
@@ -45,19 +45,18 @@ Access management: `list_access()`, `add_chat(chat_id, name?)`, `add_dir(path)`,
 It reads updates with `getUpdates`, so use a bot dedicated to this server: a bot that is already polled by another program or has a webhook gets a 409 error, and `getUpdates` discards updates that were pending for that other program. Questions run one at a time. In a group chat any member can answer.
 
 ## Automatic notifications (Claude Code hooks)
-The same package has a `notify` command, so you are told when work ends without the agent having to remember. Add to `~/.claude/settings.json` (replace the placeholders):
+The package also has a `notify` command, so you hear about finished work without asking the agent to send anything. Add this to `~/.claude/settings.json` (replace the placeholders):
 
 ```json
 {
+  "env": { "TELEGRAM_BOT_TOKEN": "<token>", "ALLOWED_CHAT_IDS": "<chat_id>" },
   "hooks": {
-    "Stop": [{ "hooks": [{ "type": "command",
-      "command": "uv run --project <project_dir> --env-file <project_dir>/.env mcp-server-telegram-bot notify --hook" }] }],
-    "Notification": [{ "hooks": [{ "type": "command",
-      "command": "uv run --project <project_dir> --env-file <project_dir>/.env mcp-server-telegram-bot notify --hook --silent" }] }]
+    "Stop": [{ "hooks": [{ "type": "command", "command": "uvx mcp-server-telegram-bot notify --hook" }] }],
+    "Notification": [{ "hooks": [{ "type": "command", "command": "uvx mcp-server-telegram-bot notify --hook --silent" }] }]
   }
 }
 ```
-`notify "text"` also works from any shell or script. Options: `--chat <name>`, `--silent`. Exit code is 1 with a message on stderr if sending fails.
+`notify "text"` also works from any shell or script. Options: `--chat <name>`, `--silent`. It exits with code 1 and a message on stderr if sending fails.
 
 ## File access
 1. **Never sent**, whatever env or the agent says: `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `~/.claude*`, browser profiles, keyrings, `/etc`, `/proc`, `/sys`; `.env*`, `.netrc`, `.pgpass`, `.git-credentials`, `.git/config`, `id_*` keys, `*.pem`, `*.key`, `*.p12`, `*.kdbx`, shell history. Paths are resolved with `realpath`, so symlinks and `..` do not help. Add your own with `DENY_PATHS`.
@@ -70,19 +69,14 @@ Outgoing text, captions, generated files and text files are scanned for well-kno
 
 Send tools take `silent` and `thread_id` (forum topic). Photos over 10 MB go out as documents. Albums are vetted all-or-nothing: one protected or secret-looking file blocks the whole album, and files outside the allowed roots are confirmed once.
 
-Telegram flood limits (HTTP 429) are retried once when the wait is 30 s or less. `silent=true` on send tools delivers without a notification sound.
+Telegram flood limits (HTTP 429) are retried once when the wait is 30 s or less.
 
 Every send is logged (time, chat, path or file name, never contents) to `~/.local/state/telegram-mcp/sent.log`.
 
-Limits: the deny list cannot know every secret. A password inside an ordinary file in the session directory will be sent if the agent is told to send it. Files go to Telegram's servers. Max 50 MB. Use one bot per user.
+Good to know: the deny list and secret scan cannot recognise every secret, files go to Telegram's servers, the maximum file size is 50 MB, and each person should use their own bot.
 
 ## Changing access from the agent
 - `add_chat` / `add_dir` ask the user to confirm (MCP elicitation). If the client cannot ask, the call is refused.
 - `/` and the home directory cannot be added. Protected dirs stay blocked.
-- Additions are saved in `~/.config/mcp-server-telegram-bot/state.json` (override with `TELEGRAM_MCP_STATE`).
+- Additions are saved in `~/.config/telegram-mcp/state.json` (override with `TELEGRAM_MCP_STATE`).
 - `remove_*` only removes runtime additions. Env entries are changed in the environment.
-
-## Development
-```
-uv sync && uv run pytest
-```
