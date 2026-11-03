@@ -528,3 +528,17 @@ def test_ask_serialized(tmp_path, monkeypatch):
     assert asyncio.run(both()) == ["Yes", "No"]
     sends = [i for i, m in enumerate(fake.methods()) if m == "sendMessage"]
     assert "editMessageText" in fake.methods()[sends[0] : sends[1]]  # second question waited for the first
+
+
+def test_edit_message(tmp_path, monkeypatch):
+    server, sent = _server(tmp_path, monkeypatch)
+    assert asyncio.run(server.edit_message(7, "progress 70%", parse_mode="HTML")) == "edited message_id=7"
+    method, data, _ = sent[-1]
+    assert method == "editMessageText" and data == {"chat_id": "1", "message_id": 7, "text": "progress 70%", "parse_mode": "HTML"}
+    for bad in (dict(text=" "), dict(text="x" * 4097), dict(text="x", parse_mode="Markdown")):
+        with pytest.raises(ValueError):
+            asyncio.run(server.edit_message(7, **bad))
+    with pytest.raises(security.DeniedError):
+        asyncio.run(server.edit_message(7, "x", chat_id="999"))
+    with pytest.raises(security.DeniedError):
+        asyncio.run(server.edit_message(7, "key " + FAKE_TG))

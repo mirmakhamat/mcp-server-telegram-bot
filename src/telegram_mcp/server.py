@@ -80,6 +80,22 @@ async def send_message(text: str, chat_id: str | None = None, parse_mode: str | 
     return f"sent {len(ids)} message(s), message_id={ids[-1]}"
 
 
+@mcp.tool()
+async def edit_message(message_id: int, text: str, chat_id: str | None = None, parse_mode: str | None = None) -> str:
+    """Replace the text of a message this bot sent earlier (e.g. update a progress line instead of sending a new one).
+    Use the message_id returned by send_message and the same chat_id. Text must fit one message (4096 chars)."""
+    if not text.strip() or len(text) > txt.MESSAGE_LIMIT:
+        raise ValueError(f"text must be 1-{txt.MESSAGE_LIMIT} characters")
+    if parse_mode not in (None, *txt.PARSE_MODES):
+        raise ValueError(f"parse_mode must be one of: {', '.join(txt.PARSE_MODES)}")
+    c = cfg()
+    chat = security.resolve_chat(c, chat_id)
+    data = {"chat_id": chat, "message_id": message_id, "text": _clean(c, text), **({"parse_mode": parse_mode} if parse_mode else {})}
+    await telegram.call(c.token, "editMessageText", data)
+    _log(chat, f"edit message_id={message_id}")
+    return f"edited message_id={message_id}"
+
+
 def _log(chat: str, what: str) -> None:
     """Append-only record of what was sent where. Never stores file contents."""
     path = os.path.expanduser(os.environ.get("TELEGRAM_MCP_LOG", "~/.local/state/telegram-mcp/sent.log"))

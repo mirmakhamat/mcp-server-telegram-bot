@@ -35,7 +35,7 @@ Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the
 - A person can only receive messages after they open the bot and press Start. Telegram blocks the bot otherwise.
 
 ## Tools
-`send_message(text, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `send_generated(name, content, format, caption?, chat_id?)`, `get_updates(limit?)`, `ask_user(question, options?, timeout_s?, chat_id?)`
+`send_message(text, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `send_generated(name, content, format, caption?, chat_id?)`, `edit_message(message_id, text, chat_id?)`, `get_updates(limit?)`, `ask_user(question, options?, timeout_s?, chat_id?)`
 Access management: `list_access()`, `add_chat(chat_id, name?)`, `add_dir(path)`, `remove_chat(chat)`, `remove_dir(path)`
 
 ## Asking you from the agent
