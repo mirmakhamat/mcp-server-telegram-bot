@@ -1,7 +1,8 @@
 name: Publish
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:  # Actions tab -> Publish -> Run workflow
+  release:
+    types: [published]
 jobs:
   pypi:
     runs-on: ubuntu-latest
