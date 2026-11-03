@@ -6,7 +6,7 @@ from datetime import datetime
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel
 
-from . import pdf, security, telegram
+from . import pdf, security, telegram, text as txt
 
 FORMATS = ("pdf", "md", "txt", "csv", "json")
 mcp = FastMCP("telegram")
@@ -24,12 +24,29 @@ def cfg() -> security.Config:
     return security.merge(base(), security.load_extra(security.state_path()))
 
 
+def _data(chat: str, caption: str | None = None) -> dict:
+    caption = txt.clip_caption(caption)
+    return {"chat_id": chat, **({"caption": caption} if caption else {})}
+
+
 @mcp.tool()
-async def send_message(text: str, chat_id: str | None = None) -> str:
-    """Send a text message. chat_id is an allowed id or name (see list_access); omitted = default chat."""
+async def send_message(text: str, chat_id: str | None = None, parse_mode: str | None = None) -> str:
+    """Send a text message; long text is split into several messages. chat_id is an allowed id or name
+    (see list_access); omitted = default chat. parse_mode (MarkdownV2 or HTML) applies only when the text fits one message."""
+    if not text.strip():
+        raise ValueError("text is empty")
+    if parse_mode not in (None, *txt.PARSE_MODES):
+        raise ValueError(f"parse_mode must be one of: {', '.join(txt.PARSE_MODES)}")
     c = cfg()
-    r = await telegram.call(c.token, "sendMessage", {"chat_id": security.resolve_chat(c, chat_id), "text": text})
-    return f"sent, message_id={r['message_id']}"
+    chat = security.resolve_chat(c, chat_id)
+    chunks = txt.split_text(text)
+    ids = []
+    for chunk in chunks:
+        extra = {"parse_mode": parse_mode} if parse_mode and len(chunks) == 1 else {}
+        r = await telegram.call(c.token, "sendMessage", {"chat_id": chat, "text": chunk, **extra})
+        ids.append(r["message_id"])
+    _log(chat, f"message chars={len(text)} parts={len(ids)}")
+    return f"sent {len(ids)} message(s), message_id={ids[-1]}"
 
 
 def _log(chat: str, what: str) -> None:
@@ -51,7 +68,7 @@ async def _send_file(ctx: Context, method: str, field: str, path: str, caption: 
         if c.mode == "strict":
             raise security.DeniedError("file is outside the session directory and ALLOWED_DIRS (ACCESS_MODE=strict)")
         await _approve(ctx, f"send {real} to chat {chat}")
-    data = {"chat_id": chat, **({"caption": caption} if caption else {})}
+    data = _data(chat, caption)
     with open(real, "rb") as f:
         r = await telegram.call(c.token, method, data, {field: f})
     _log(chat, f"file={real}")
@@ -85,7 +102,7 @@ async def send_generated(
     body = pdf.render(content, title=name if format == "pdf" else None) if format == "pdf" else content.encode()
     if len(body) > security.MAX_BYTES:
         raise security.DeniedError("file is larger than 50 MB")
-    data = {"chat_id": chat, **({"caption": caption} if caption else {})}
+    data = _data(chat, caption)
     r = await telegram.call(c.token, "sendDocument", data, {"document": (filename, body)})
     _log(chat, f"generated={filename} bytes={len(body)}")
     return f"sent {filename}, message_id={r['message_id']}"

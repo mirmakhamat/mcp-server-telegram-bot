@@ -284,3 +284,47 @@ def test_send_file_tiers(tmp_path, monkeypatch):
     with pytest.raises(security.DeniedError):
         run("strict", tmp_path / "out.txt", Ctx(True))
     assert len(sent) == 2
+
+
+def test_split_text():
+    from telegram_mcp import text
+
+    assert text.split_text("short") == ["short"]
+    long = "\n".join(f"line {i} " + "x" * 50 for i in range(300))
+    parts = text.split_text(long)
+    assert len(parts) > 1 and all(len(p) <= text.MESSAGE_LIMIT for p in parts)
+    assert "".join(parts) == long
+    giant = "y" * 10000  # one line longer than the limit
+    parts = text.split_text(giant)
+    assert [len(p) for p in parts] == [4096, 4096, 1808] and "".join(parts) == giant
+    assert text.split_text("") == []
+
+
+def test_caption_clip():
+    from telegram_mcp import text
+
+    assert text.clip_caption(None) is None and text.clip_caption("ok") == "ok"
+    assert len(text.clip_caption("z" * 2000)) == text.CAPTION_LIMIT
+
+
+def test_send_message_split_and_parse_mode(tmp_path, monkeypatch):
+    from telegram_mcp import server
+
+    monkeypatch.setenv("TELEGRAM_MCP_STATE", str(tmp_path / "s.json"))
+    monkeypatch.setenv("TELEGRAM_MCP_LOG", str(tmp_path / "sent.log"))
+    server._base = cfg(tmp_path)
+    calls = []
+
+    async def fake(token, method, data=None, files=None, client=None):
+        calls.append(data)
+        return {"message_id": len(calls)}
+
+    monkeypatch.setattr(server.telegram, "call", fake)
+    assert asyncio.run(server.send_message("*hi*", parse_mode="MarkdownV2")) == "sent 1 message(s), message_id=1"
+    assert calls[0]["parse_mode"] == "MarkdownV2"
+    calls.clear()
+    assert asyncio.run(server.send_message("a" * 9000, parse_mode="HTML")) == "sent 3 message(s), message_id=3"
+    assert all("parse_mode" not in d for d in calls)  # split text goes out plain
+    for bad in (dict(text="  "), dict(text="x", parse_mode="Markdown")):
+        with pytest.raises(ValueError):
+            asyncio.run(server.send_message(**bad))
