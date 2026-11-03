@@ -6,7 +6,7 @@ from datetime import datetime
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel
 
-from . import pdf, security, telegram, text as txt
+from . import pdf, redact, security, telegram, text as txt
 
 FORMATS = ("pdf", "md", "txt", "csv", "json")
 mcp = FastMCP("telegram")
@@ -24,8 +24,35 @@ def cfg() -> security.Config:
     return security.merge(base(), security.load_extra(security.state_path()))
 
 
-def _data(chat: str, caption: str | None = None) -> dict:
-    caption = txt.clip_caption(caption)
+def _clean(c: security.Config, text: str) -> str:
+    """Apply SECRET_SCAN to outgoing text: refuse, mask or pass through."""
+    if c.scan == "off":
+        return text
+    kinds = redact.find(text, (c.token,))
+    if not kinds:
+        return text
+    if c.scan == "redact":
+        return redact.redact(text, (c.token,))
+    raise security.DeniedError(f"possible secret in content ({', '.join(kinds)}); remove it first")
+
+
+def _scan_file(c: security.Config, real: str) -> None:
+    """Refuse text files that look like they hold secrets. Binary files are not scanned."""
+    if c.scan == "off":
+        return
+    with open(real, "rb") as f:
+        head = f.read(2_000_000)
+    try:
+        body = head.decode()
+    except UnicodeDecodeError:
+        return
+    kinds = redact.find(body, (c.token,))
+    if kinds:
+        raise security.DeniedError(f"file looks like it contains secrets ({', '.join(kinds)}); a file cannot be masked")
+
+
+def _data(c: security.Config, chat: str, caption: str | None = None) -> dict:
+    caption = txt.clip_caption(_clean(c, caption)) if caption else None
     return {"chat_id": chat, **({"caption": caption} if caption else {})}
 
 
@@ -39,7 +66,7 @@ async def send_message(text: str, chat_id: str | None = None, parse_mode: str | 
         raise ValueError(f"parse_mode must be one of: {', '.join(txt.PARSE_MODES)}")
     c = cfg()
     chat = security.resolve_chat(c, chat_id)
-    chunks = txt.split_text(text)
+    chunks = txt.split_text(_clean(c, text))
     ids = []
     for chunk in chunks:
         extra = {"parse_mode": parse_mode} if parse_mode and len(chunks) == 1 else {}
@@ -64,11 +91,12 @@ async def _send_file(ctx: Context, method: str, field: str, path: str, caption: 
     c = cfg()
     chat = security.resolve_chat(c, chat_id)
     real = security.check_path(c, path)
+    _scan_file(c, real)
     if not security.is_inside(c, real):
         if c.mode == "strict":
             raise security.DeniedError("file is outside the session directory and ALLOWED_DIRS (ACCESS_MODE=strict)")
         await _approve(ctx, f"send {real} to chat {chat}")
-    data = _data(chat, caption)
+    data = _data(c, chat, caption)
     with open(real, "rb") as f:
         r = await telegram.call(c.token, method, data, {field: f})
     _log(chat, f"file={real}")
@@ -99,10 +127,11 @@ async def send_generated(
     chat = security.resolve_chat(c, chat_id)
     stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(os.path.basename(name))[0]).strip("._") or "file"
     filename = f"{stem}.{format}"
+    content = _clean(c, content)
     body = pdf.render(content, title=name if format == "pdf" else None) if format == "pdf" else content.encode()
     if len(body) > security.MAX_BYTES:
         raise security.DeniedError("file is larger than 50 MB")
-    data = _data(chat, caption)
+    data = _data(c, chat, caption)
     r = await telegram.call(c.token, "sendDocument", data, {"document": (filename, body)})
     _log(chat, f"generated={filename} bytes={len(body)}")
     return f"sent {filename}, message_id={r['message_id']}"

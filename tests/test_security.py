@@ -328,3 +328,92 @@ def test_send_message_split_and_parse_mode(tmp_path, monkeypatch):
     for bad in (dict(text="  "), dict(text="x", parse_mode="Markdown")):
         with pytest.raises(ValueError):
             asyncio.run(server.send_message(**bad))
+
+
+FAKE_TG = "123456789:" + "A" * 35
+SECRETS = [
+    "-----BEGIN OPENSSH PRIVATE KEY-----",
+    FAKE_TG,
+    "AKIAABCDEFGHIJKLMNOP",
+    "ghp_" + "a" * 36,
+    "sk-ant-" + "b" * 30,
+    "xoxb-1234567890-abcdef",
+    "AIza" + "c" * 35,
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijk",
+    "password = Sup3rS3cret!",
+]
+HARMLESS = ["password: required", "the token expires soon", "ssh keys live in ~/.ssh", "id 123456789 done", "sk-learn"]
+
+
+def test_redact_find():
+    from telegram_mcp import redact
+
+    for s in SECRETS:
+        assert redact.find(s), s
+        assert s not in redact.redact(s) or "BEGIN" in s
+    for s in HARMLESS:
+        assert not redact.find(s), s
+    assert redact.find("x mytoken y", ("mytoken",)) and "mytoken" not in redact.redact("x mytoken y", ("mytoken",))
+
+
+def _server(tmp_path, monkeypatch, scan="block"):
+    from telegram_mcp import server
+
+    monkeypatch.setenv("TELEGRAM_MCP_STATE", str(tmp_path / "s.json"))
+    monkeypatch.setenv("TELEGRAM_MCP_LOG", str(tmp_path / "sent.log"))
+    server._base = security.load_config(
+        {"TELEGRAM_BOT_TOKEN": TOKEN, "ALLOWED_CHAT_IDS": "1", "SECRET_SCAN": scan}, cwd=str(tmp_path)
+    )
+    sent = []
+
+    async def fake(token, method, data=None, files=None, client=None):
+        sent.append((method, data, files))
+        return {"message_id": 1}
+
+    monkeypatch.setattr(server.telegram, "call", fake)
+    return server, sent
+
+
+def test_scan_modes(tmp_path, monkeypatch):
+    server, sent = _server(tmp_path, monkeypatch, "block")
+    for tool, args in (
+        (server.send_message, dict(text="key " + FAKE_TG)),
+        (server.send_message, dict(text="own " + TOKEN)),
+        (server.send_generated, dict(name="r", content="ghp_" + "a" * 36, format="md")),
+    ):
+        with pytest.raises(security.DeniedError) as e:
+            asyncio.run(tool(**args))
+        assert FAKE_TG not in str(e.value) and TOKEN not in str(e.value)
+    with pytest.raises(security.DeniedError):
+        asyncio.run(server.send_generated("r", "ok", "md", caption=FAKE_TG))
+    assert sent == []
+    server, sent = _server(tmp_path, monkeypatch, "redact")
+    asyncio.run(server.send_message("key " + FAKE_TG))
+    assert FAKE_TG not in sent[0][1]["text"] and "REDACTED" in sent[0][1]["text"]
+    server, sent = _server(tmp_path, monkeypatch, "off")
+    asyncio.run(server.send_message("key " + FAKE_TG))
+    assert FAKE_TG in sent[0][1]["text"]
+
+
+def test_scan_files(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    server, sent = _server(tmp_path, monkeypatch, "block")
+    ctx = NS()
+    bad, good, binary = tmp_path / "a.txt", tmp_path / "b.txt", tmp_path / "c.bin"
+    bad.write_text("config\npassword = Sup3rS3cret!\n")
+    good.write_text("just a report\n")
+    binary.write_bytes(b"\xff\xfe" + FAKE_TG.encode() + b"\x00")
+    with pytest.raises(security.DeniedError):
+        asyncio.run(server.send_document(ctx, str(bad)))
+    asyncio.run(server.send_document(ctx, str(good)))
+    asyncio.run(server.send_document(ctx, str(binary)))  # binary is not scanned
+    assert len(sent) == 2
+    server, sent = _server(tmp_path, monkeypatch, "redact")
+    with pytest.raises(security.DeniedError):
+        asyncio.run(server.send_document(ctx, str(bad)))  # files cannot be masked
+
+
+def test_bad_scan_mode():
+    with pytest.raises(security.ConfigError):
+        security.load_config({"TELEGRAM_BOT_TOKEN": "x", "ALLOWED_CHAT_IDS": "1", "SECRET_SCAN": "maybe"})

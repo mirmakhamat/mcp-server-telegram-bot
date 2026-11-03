@@ -35,6 +35,7 @@ class Config:
     session_dir: str = ""  # auto-allowed; empty when the session runs in / or home
     mode: str = "ask"  # ask = confirm files outside allowed roots, strict = refuse them
     deny: tuple[str, ...] = ()  # extra user-defined blocked paths
+    scan: str = "block"  # secret scan of outgoing text/files: block, redact or off
 
 
 def parse_chat(entry: str) -> tuple[str | None, str]:
@@ -69,11 +70,14 @@ def load_config(env=os.environ, cwd: str | None = None) -> Config:
     mode = env.get("ACCESS_MODE", "ask").strip().lower()
     if mode not in ("ask", "strict"):
         raise ConfigError("ACCESS_MODE must be 'ask' or 'strict'")
+    scan = env.get("SECRET_SCAN", "block").strip().lower()
+    if scan not in ("block", "redact", "off"):
+        raise ConfigError("SECRET_SCAN must be 'block', 'redact' or 'off'")
     session = os.path.realpath(cwd or os.getcwd())
     if session in (os.sep, os.path.realpath(os.path.expanduser("~"))):
         session = ""
     deny = tuple(os.path.realpath(os.path.expanduser(d)) for d in _split(env.get("DENY_PATHS", "")))
-    return Config(token, chat_ids, dirs, names, session, mode, deny)
+    return Config(token, chat_ids, dirs, names, session, mode, deny, scan)
 
 
 def resolve_chat(cfg: Config, chat_id: str | int | None) -> str:

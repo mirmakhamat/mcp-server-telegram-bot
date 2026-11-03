@@ -26,6 +26,7 @@ Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the
 | `ALLOWED_CHAT_IDS` | Comma-separated chats, each `id` or `name=id` (e.g. `me=111,ali=222`); first is default (required) |
 | `ALLOWED_DIRS` | Extra directories whose files are sent without asking (optional) |
 | `ACCESS_MODE` | `ask` (default): files outside the allowed roots need your confirmation. `strict`: they are refused |
+| `SECRET_SCAN` | `block` (default): refuse text/files that look like they hold keys or passwords. `redact`: mask them in text (files are still refused). `off` |
 | `DENY_PATHS` | Extra files/dirs that are never sent (optional) |
 
 ## Typical use
@@ -43,6 +44,8 @@ Access management: `list_access()`, `add_chat(chat_id, name?)`, `add_dir(path)`,
 3. **Everything else:** you are asked to confirm each time (`ACCESS_MODE=ask`), or it is refused (`strict`).
 
 `send_generated` builds the file from text the agent provides (pdf, md, txt, csv, json) and reads nothing from disk, so it needs no folder access: "send me a PDF of everything you did".
+
+Outgoing text, captions, generated files and text files are scanned for well-known secret shapes (private keys, bot/AWS/GitHub/Slack/Google tokens, JWTs, `password=...`). Binary files such as PDFs are not scanned. The agent cannot turn this off; only the environment can.
 
 Every send is logged (time, chat, path or file name, never contents) to `~/.local/state/telegram-mcp/sent.log`.
 
