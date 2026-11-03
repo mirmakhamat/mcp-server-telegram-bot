@@ -68,7 +68,7 @@ class Confirm(BaseModel):
 async def _approve(ctx: Context, what: str) -> None:
     """Widening access needs a human yes. Fails closed if the client cannot ask."""
     try:
-        r = await ctx.elicit(f"Allow telegram-mcp to {what}?", Confirm)
+        r = await ctx.elicit(f"Allow mcp-server-telegram-bot to {what}?", Confirm)
     except Exception:
         raise security.DeniedError("client cannot ask for confirmation; set it in the environment instead") from None
     if r.action != "accept" or not r.data.confirm:
@@ -141,7 +141,7 @@ def main() -> None:
     try:
         base()
     except security.ConfigError as e:
-        sys.exit(f"telegram-mcp: {e}")
+        sys.exit(f"mcp-server-telegram-bot: {e}")
     mcp.run()
 
 

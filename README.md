@@ -1,4 +1,4 @@
-# telegram-mcp
+# mcp-server-telegram-bot
 
 MCP server that lets AI agents send Telegram messages and files through your own bot.
 The token is read from the environment and never reaches the agent.
@@ -13,7 +13,7 @@ claude mcp add telegram \
   -e TELEGRAM_BOT_TOKEN=<token> \
   -e ALLOWED_CHAT_IDS=<chat_id> \
   -e ALLOWED_DIRS=<dir1>,<dir2> \
-  -- uvx telegram-mcp
+  -- uvx mcp-server-telegram-bot
 ```
 
 Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the agent to run `get_updates`, then re-register with the real id.
@@ -43,7 +43,7 @@ Access management: `list_access()`, `add_chat(chat_id, name?)`, `add_dir(path)`,
 ## Changing access from the agent
 - `add_chat` / `add_dir` ask the user to confirm (MCP elicitation). If the client cannot ask, the call is refused.
 - `/` and the home directory cannot be added. Protected dirs stay blocked.
-- Additions are saved in `~/.config/telegram-mcp/state.json` (override with `TELEGRAM_MCP_STATE`).
+- Additions are saved in `~/.config/mcp-server-telegram-bot/state.json` (override with `TELEGRAM_MCP_STATE`).
 - `remove_*` only removes runtime additions. Env entries are changed in the environment.
 
 ## Development
