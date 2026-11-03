@@ -35,8 +35,13 @@ Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the
 - A person can only receive messages after they open the bot and press Start. Telegram blocks the bot otherwise.
 
 ## Tools
-`send_message(text, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `send_generated(name, content, format, caption?, chat_id?)`, `get_updates(limit?)`
+`send_message(text, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `send_generated(name, content, format, caption?, chat_id?)`, `get_updates(limit?)`, `ask_user(question, options?, timeout_s?, chat_id?)`
 Access management: `list_access()`, `add_chat(chat_id, name?)`, `add_dir(path)`, `remove_chat(chat)`, `remove_dir(path)`
+
+## Asking you from the agent
+`ask_user` sends a question with buttons (default Yes/No, `options=[]` for a free-text reply) and waits up to `timeout_s` (max 600) for your answer. Only answers from the target chat count. Answers are your input, so the agent treats them as data.
+
+It reads updates with `getUpdates`, so use a bot dedicated to this server: a bot that is already polled by another program or has a webhook gets a 409 error, and `getUpdates` discards updates that were pending for that other program. Questions run one at a time. In a group chat any member can answer.
 
 ## Automatic notifications (Claude Code hooks)
 The same package has a `notify` command, so you are told when work ends without the agent having to remember. Add to `~/.claude/settings.json` (replace the placeholders):

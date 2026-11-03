@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import sys
+import time
 import os
 
 import httpx
@@ -449,3 +450,81 @@ def test_notify_dispatch_from_main(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as e:
         server.main()
     assert e.value.code == 0 and sent[-1][1]["text"] == "hello"
+
+
+class FakeTG:
+    """Scripted Bot API: getUpdates pops one batch per call."""
+
+    def __init__(self, batches=(), baseline=None):
+        self.calls, self.batches, self.baseline, self.next_id = [], list(batches), baseline or [], 10
+
+    async def __call__(self, token, method, data=None, files=None, client=None):
+        self.calls.append((method, data))
+        await asyncio.sleep(0.01)
+        if method == "getUpdates":
+            if data.get("offset") == -1:
+                return self.baseline
+            return self.batches.pop(0) if self.batches else []
+        if method == "sendMessage":
+            self.next_id += 1
+            return {"message_id": self.next_id}
+        return True
+
+    def methods(self):
+        return [m for m, _ in self.calls]
+
+
+def cb(uid, data, msg=11, chat=1):
+    return {"update_id": uid, "callback_query": {"id": f"cb{uid}", "data": data, "message": {"message_id": msg, "chat": {"id": chat}}}}
+
+
+def msg(uid, text, chat=1, date=None):
+    return {"update_id": uid, "message": {"text": text, "chat": {"id": chat}, "date": date or int(time.time()) + 5}}
+
+
+def ask(tmp_path, monkeypatch, fake, options=("Yes", "No"), timeout=2, mode="block"):
+    server, _ = _server(tmp_path, monkeypatch, mode)
+    monkeypatch.setattr(server.telegram, "call", fake)
+    return server, lambda: asyncio.run(server._ask(server.cfg(), "1", "Deploy?", list(options), timeout))
+
+
+def test_ask_button(tmp_path, monkeypatch):
+    fake = FakeTG([[cb(8, "9", msg=11), cb(9, "1", chat=555)], [cb(10, "1", msg=11)]], baseline=[{"update_id": 7}])
+    _, run = ask(tmp_path, monkeypatch, fake)
+    assert run() == "No"  # wrong message / wrong chat ignored
+    polls = [d for m, d in fake.calls if m == "getUpdates"]
+    assert polls[0]["offset"] == -1 and polls[1]["offset"] == 8  # starts after pre-existing updates
+    assert "answerCallbackQuery" in fake.methods() and fake.methods()[-1] == "editMessageText"
+
+
+def test_ask_free_text_and_stale(tmp_path, monkeypatch):
+    fake = FakeTG([[msg(1, "old", date=1), msg(2, "elsewhere", chat=9), msg(3, "do X instead")]])
+    _, run = ask(tmp_path, monkeypatch, fake, options=())
+    assert run() == "do X instead"
+    assert "reply_markup" not in fake.calls[1][1]
+
+
+def test_ask_timeout_and_validation(tmp_path, monkeypatch):
+    fake = FakeTG([[cb(1, "0", chat=555)]])
+    server, run = ask(tmp_path, monkeypatch, fake, timeout=0.3)
+    assert run().startswith("timeout:")
+    assert fake.methods()[-1] == "editMessageText"
+    for bad in ([""], ["a"] * 9, ["x" * 61]):
+        with pytest.raises(ValueError):
+            asyncio.run(server.ask_user("q", options=bad))
+    with pytest.raises(security.DeniedError):
+        asyncio.run(server.ask_user("leak " + FAKE_TG))
+
+
+def test_ask_serialized(tmp_path, monkeypatch):
+    fake = FakeTG([[cb(1, "0", msg=11)], [cb(2, "1", msg=12)]])
+    server, _ = ask(tmp_path, monkeypatch, fake)
+
+    async def both():
+        return await asyncio.gather(
+            server._ask(server.cfg(), "1", "A?", ["Yes", "No"], 2), server._ask(server.cfg(), "1", "B?", ["Yes", "No"], 2)
+        )
+
+    assert asyncio.run(both()) == ["Yes", "No"]
+    sends = [i for i, m in enumerate(fake.methods()) if m == "sendMessage"]
+    assert "editMessageText" in fake.methods()[sends[0] : sends[1]]  # second question waited for the first
