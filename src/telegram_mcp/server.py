@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+from collections import deque
 from datetime import datetime
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -55,26 +56,47 @@ def _scan_file(c: security.Config, real: str) -> None:
         raise security.DeniedError(f"file looks like it contains secrets ({', '.join(kinds)}); a file cannot be masked")
 
 
-def _data(c: security.Config, chat: str, caption: str | None = None) -> dict:
+_sent_at: deque = deque()
+
+
+def _throttle(c: security.Config) -> None:
+    """Stop a runaway agent from flooding the chat (and getting the bot rate-limited)."""
+    if not c.rate:
+        return
+    now = time.monotonic()
+    while _sent_at and now - _sent_at[0] > 60:
+        _sent_at.popleft()
+    if len(_sent_at) >= c.rate:
+        raise security.DeniedError(f"rate limit: {c.rate} sends per minute; retry in {int(60 - (now - _sent_at[0])) + 1} s")
+    _sent_at.append(now)
+
+
+def _flags(silent: bool) -> dict:
+    return {"disable_notification": True} if silent else {}
+
+
+def _data(c: security.Config, chat: str, caption: str | None = None, silent: bool = False) -> dict:
     caption = txt.clip_caption(_clean(c, caption)) if caption else None
-    return {"chat_id": chat, **({"caption": caption} if caption else {})}
+    return {"chat_id": chat, **({"caption": caption} if caption else {}), **_flags(silent)}
 
 
 @mcp.tool()
-async def send_message(text: str, chat_id: str | None = None, parse_mode: str | None = None) -> str:
+async def send_message(text: str, chat_id: str | None = None, parse_mode: str | None = None, silent: bool = False) -> str:
     """Send a text message; long text is split into several messages. chat_id is an allowed id or name
-    (see list_access); omitted = default chat. parse_mode (MarkdownV2 or HTML) applies only when the text fits one message."""
+    (see list_access); omitted = default chat. parse_mode (MarkdownV2 or HTML) applies only when the text fits one message.
+    silent = deliver without a notification sound."""
     if not text.strip():
         raise ValueError("text is empty")
     if parse_mode not in (None, *txt.PARSE_MODES):
         raise ValueError(f"parse_mode must be one of: {', '.join(txt.PARSE_MODES)}")
     c = cfg()
     chat = security.resolve_chat(c, chat_id)
+    _throttle(c)
     chunks = txt.split_text(_clean(c, text))
     ids = []
     for chunk in chunks:
         extra = {"parse_mode": parse_mode} if parse_mode and len(chunks) == 1 else {}
-        r = await telegram.call(c.token, "sendMessage", {"chat_id": chat, "text": chunk, **extra})
+        r = await telegram.call(c.token, "sendMessage", {"chat_id": chat, "text": chunk, **extra, **_flags(silent)})
         ids.append(r["message_id"])
     _log(chat, f"message chars={len(text)} parts={len(ids)}")
     return f"sent {len(ids)} message(s), message_id={ids[-1]}"
@@ -90,6 +112,7 @@ async def edit_message(message_id: int, text: str, chat_id: str | None = None, p
         raise ValueError(f"parse_mode must be one of: {', '.join(txt.PARSE_MODES)}")
     c = cfg()
     chat = security.resolve_chat(c, chat_id)
+    _throttle(c)
     data = {"chat_id": chat, "message_id": message_id, "text": _clean(c, text), **({"parse_mode": parse_mode} if parse_mode else {})}
     await telegram.call(c.token, "editMessageText", data)
     _log(chat, f"edit message_id={message_id}")
@@ -107,16 +130,19 @@ def _log(chat: str, what: str) -> None:
         pass  # logging must never block a send
 
 
-async def _send_file(ctx: Context, method: str, field: str, path: str, caption: str | None, chat_id: str | None) -> str:
+async def _send_file(
+    ctx: Context, method: str, field: str, path: str, caption: str | None, chat_id: str | None, silent: bool = False
+) -> str:
     c = cfg()
     chat = security.resolve_chat(c, chat_id)
+    _throttle(c)
     real = security.check_path(c, path)
     _scan_file(c, real)
     if not security.is_inside(c, real):
         if c.mode == "strict":
             raise security.DeniedError("file is outside the session directory and ALLOWED_DIRS (ACCESS_MODE=strict)")
         await _approve(ctx, f"send {real} to chat {chat}")
-    data = _data(c, chat, caption)
+    data = _data(c, chat, caption, silent)
     with open(real, "rb") as f:
         r = await telegram.call(c.token, method, data, {field: f})
     _log(chat, f"file={real}")
@@ -124,20 +150,24 @@ async def _send_file(ctx: Context, method: str, field: str, path: str, caption: 
 
 
 @mcp.tool()
-async def send_document(ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None) -> str:
+async def send_document(
+    ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None, silent: bool = False
+) -> str:
     """Send an existing file. Files in the session directory send directly; elsewhere the user is asked. Secrets (.ssh, .env, keys) are always refused."""
-    return await _send_file(ctx, "sendDocument", "document", path, caption, chat_id)
+    return await _send_file(ctx, "sendDocument", "document", path, caption, chat_id, silent)
 
 
 @mcp.tool()
-async def send_photo(ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None) -> str:
+async def send_photo(
+    ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None, silent: bool = False
+) -> str:
     """Send an existing image as a photo. Same access rules as send_document."""
-    return await _send_file(ctx, "sendPhoto", "photo", path, caption, chat_id)
+    return await _send_file(ctx, "sendPhoto", "photo", path, caption, chat_id, silent)
 
 
 @mcp.tool()
 async def send_generated(
-    name: str, content: str, format: str = "pdf", caption: str | None = None, chat_id: str | None = None
+    name: str, content: str, format: str = "pdf", caption: str | None = None, chat_id: str | None = None, silent: bool = False
 ) -> str:
     """Create a file from text and send it; reads nothing from disk. format: pdf, md, txt, csv, json.
     For a pdf, '# ' / '## ' lines are headings and '- ' lines are bullets. Use it for reports, summaries, logs, tables."""
@@ -145,13 +175,14 @@ async def send_generated(
         raise ValueError(f"format must be one of: {', '.join(FORMATS)}")
     c = cfg()
     chat = security.resolve_chat(c, chat_id)
+    _throttle(c)
     stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(os.path.basename(name))[0]).strip("._") or "file"
     filename = f"{stem}.{format}"
     content = _clean(c, content)
     body = pdf.render(content, title=name if format == "pdf" else None) if format == "pdf" else content.encode()
     if len(body) > security.MAX_BYTES:
         raise security.DeniedError("file is larger than 50 MB")
-    data = _data(c, chat, caption)
+    data = _data(c, chat, caption, silent)
     r = await telegram.call(c.token, "sendDocument", data, {"document": (filename, body)})
     _log(chat, f"generated={filename} bytes={len(body)}")
     return f"sent {filename}, message_id={r['message_id']}"
@@ -212,6 +243,7 @@ async def ask_user(
         raise ValueError("options: at most 8 labels, each 1-60 characters")
     c = cfg()
     chat = security.resolve_chat(c, chat_id)
+    _throttle(c)
     question = txt.split_text(_clean(c, question), txt.MESSAGE_LIMIT - 40)[0]
     return await _ask(c, chat, question, options, max(1, min(timeout_s, 600)))
 

@@ -360,13 +360,14 @@ def test_redact_find():
     assert redact.find("x mytoken y", ("mytoken",)) and "mytoken" not in redact.redact("x mytoken y", ("mytoken",))
 
 
-def _server(tmp_path, monkeypatch, scan="block"):
+def _server(tmp_path, monkeypatch, scan="block", extra_env=None):
     from telegram_mcp import server
 
     monkeypatch.setenv("TELEGRAM_MCP_STATE", str(tmp_path / "s.json"))
     monkeypatch.setenv("TELEGRAM_MCP_LOG", str(tmp_path / "sent.log"))
+    server._sent_at.clear()
     server._base = security.load_config(
-        {"TELEGRAM_BOT_TOKEN": TOKEN, "ALLOWED_CHAT_IDS": "1", "SECRET_SCAN": scan}, cwd=str(tmp_path)
+        {"TELEGRAM_BOT_TOKEN": TOKEN, "ALLOWED_CHAT_IDS": "1", "SECRET_SCAN": scan, **(extra_env or {})}, cwd=str(tmp_path)
     )
     sent = []
 
@@ -542,3 +543,90 @@ def test_edit_message(tmp_path, monkeypatch):
         asyncio.run(server.edit_message(7, "x", chat_id="999"))
     with pytest.raises(security.DeniedError):
         asyncio.run(server.edit_message(7, "key " + FAKE_TG))
+
+
+def test_rate_limit(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    server, sent = _server(tmp_path, monkeypatch, extra_env={"MAX_SENDS_PER_MINUTE": "3"})
+    f = tmp_path / "a.txt"
+    f.write_text("x")
+    asyncio.run(server.send_message("1"))
+    asyncio.run(server.send_document(NS(), str(f)))
+    asyncio.run(server.send_generated("r", "x", "md"))
+    for call in (lambda: server.send_message("4"), lambda: server.edit_message(1, "x"), lambda: server.ask_user("q")):
+        with pytest.raises(security.DeniedError, match="rate limit"):
+            asyncio.run(call())
+    assert len(sent) == 3
+    real = time.monotonic
+    monkeypatch.setattr(server.time, "monotonic", lambda: real() + 61)
+    asyncio.run(server.send_message("later"))  # window has passed
+    assert len(sent) == 4
+
+
+def test_rate_zero_means_unlimited_and_bad_value(tmp_path, monkeypatch):
+    server, sent = _server(tmp_path, monkeypatch, extra_env={"MAX_SENDS_PER_MINUTE": "0"})
+    for i in range(30):
+        asyncio.run(server.send_message(str(i)))
+    assert len(sent) == 30
+    for bad in ("-1", "many"):
+        with pytest.raises(security.ConfigError):
+            security.load_config({"TELEGRAM_BOT_TOKEN": "x", "ALLOWED_CHAT_IDS": "1", "MAX_SENDS_PER_MINUTE": bad})
+
+
+def test_silent_flag(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    server, sent = _server(tmp_path, monkeypatch)
+    f = tmp_path / "a.txt"
+    f.write_text("x")
+    asyncio.run(server.send_message("q", silent=True))
+    asyncio.run(server.send_document(NS(), str(f), silent=True))
+    asyncio.run(server.send_generated("r", "x", "md", silent=True))
+    asyncio.run(server.send_message("loud"))
+    assert [d.get("disable_notification") for _, d, _ in sent] == [True, True, True, None]
+
+
+def _tg_client(responses, seen):
+    def handler(request):
+        seen.append(request.content)
+        status = responses.pop(0)
+        return httpx.Response(200, json=status)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def test_429_retry_rewinds_upload(monkeypatch):
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr(telegram.asyncio, "sleep", fake_sleep)
+    seen = []
+    flood = {"ok": False, "error_code": 429, "description": "Too Many Requests", "parameters": {"retry_after": 3}}
+    client = _tg_client([flood, {"ok": True, "result": {"message_id": 9}}], seen)
+    r = asyncio.run(telegram.call(TOKEN, "sendDocument", {"chat_id": "1"}, {"document": io.BytesIO(b"PAYLOAD")}, client=client))
+    assert r == {"message_id": 9} and sleeps == [3]
+    assert len(seen) == 2 and b"PAYLOAD" in seen[0] and b"PAYLOAD" in seen[1]  # file re-sent from the start
+
+
+def test_429_long_wait_and_second_flood_are_reported(monkeypatch):
+    async def no_sleep(s):
+        raise AssertionError("must not sleep")
+
+    monkeypatch.setattr(telegram.asyncio, "sleep", no_sleep)
+    long = {"ok": False, "error_code": 429, "description": "Too Many Requests", "parameters": {"retry_after": 500}}
+    with pytest.raises(telegram.TelegramError, match="retry after 500 s"):
+        asyncio.run(telegram.call(TOKEN, "sendMessage", client=_tg_client([long], [])))
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr(telegram.asyncio, "sleep", fake_sleep)
+    short = {**long, "parameters": {"retry_after": 1}}
+    seen = []
+    with pytest.raises(telegram.TelegramError, match="429"):
+        asyncio.run(telegram.call(TOKEN, "sendMessage", client=_tg_client([short, short], seen)))
+    assert len(seen) == 2 and sleeps == [1]  # retried once only

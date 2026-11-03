@@ -27,6 +27,7 @@ Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the
 | `ALLOWED_DIRS` | Extra directories whose files are sent without asking (optional) |
 | `ACCESS_MODE` | `ask` (default): files outside the allowed roots need your confirmation. `strict`: they are refused |
 | `SECRET_SCAN` | `block` (default): refuse text/files that look like they hold keys or passwords. `redact`: mask them in text (files are still refused). `off` |
+| `MAX_SENDS_PER_MINUTE` | Send limit so a looping agent cannot flood the chat (default 20, `0` = unlimited) |
 | `DENY_PATHS` | Extra files/dirs that are never sent (optional) |
 
 ## Typical use
@@ -66,6 +67,8 @@ The same package has a `notify` command, so you are told when work ends without 
 `send_generated` builds the file from text the agent provides (pdf, md, txt, csv, json) and reads nothing from disk, so it needs no folder access: "send me a PDF of everything you did".
 
 Outgoing text, captions, generated files and text files are scanned for well-known secret shapes (private keys, bot/AWS/GitHub/Slack/Google tokens, JWTs, `password=...`). Binary files such as PDFs are not scanned. The agent cannot turn this off; only the environment can.
+
+Telegram flood limits (HTTP 429) are retried once when the wait is 30 s or less. `silent=true` on send tools delivers without a notification sound.
 
 Every send is logged (time, chat, path or file name, never contents) to `~/.local/state/telegram-mcp/sent.log`.
 

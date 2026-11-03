@@ -36,6 +36,7 @@ class Config:
     mode: str = "ask"  # ask = confirm files outside allowed roots, strict = refuse them
     deny: tuple[str, ...] = ()  # extra user-defined blocked paths
     scan: str = "block"  # secret scan of outgoing text/files: block, redact or off
+    rate: int = 20  # max sends per minute; 0 = unlimited
 
 
 def parse_chat(entry: str) -> tuple[str | None, str]:
@@ -73,11 +74,17 @@ def load_config(env=os.environ, cwd: str | None = None) -> Config:
     scan = env.get("SECRET_SCAN", "block").strip().lower()
     if scan not in ("block", "redact", "off"):
         raise ConfigError("SECRET_SCAN must be 'block', 'redact' or 'off'")
+    try:
+        rate = int(env.get("MAX_SENDS_PER_MINUTE", "20"))
+        if rate < 0:
+            raise ValueError
+    except ValueError:
+        raise ConfigError("MAX_SENDS_PER_MINUTE must be a non-negative integer") from None
     session = os.path.realpath(cwd or os.getcwd())
     if session in (os.sep, os.path.realpath(os.path.expanduser("~"))):
         session = ""
     deny = tuple(os.path.realpath(os.path.expanduser(d)) for d in _split(env.get("DENY_PATHS", "")))
-    return Config(token, chat_ids, dirs, names, session, mode, deny, scan)
+    return Config(token, chat_ids, dirs, names, session, mode, deny, scan, rate)
 
 
 def resolve_chat(cfg: Config, chat_id: str | int | None) -> str:
