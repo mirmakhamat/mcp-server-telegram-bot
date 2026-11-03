@@ -1,3 +1,6 @@
+import argparse
+import asyncio
+import json
 import os
 import re
 import sys
@@ -224,7 +227,51 @@ def remove_dir(path: str) -> str:
     return f"removed dir {_edit('dirs', security.validate_dir(cfg(), path), False)}"
 
 
+def _hook_text(raw: str) -> str:
+    """Build a message from the JSON Claude Code passes to hooks on stdin."""
+    try:
+        d = json.loads(raw or "{}")
+    except ValueError:
+        d = {}
+    event = d.get("hook_event_name") or "event"
+    where = os.path.basename((d.get("cwd") or "").rstrip("/"))
+    if d.get("message"):
+        msg = str(d["message"])
+    elif event in ("Stop", "SubagentStop"):
+        msg = "Task finished"
+    else:
+        msg = f"Claude Code: {event}"
+    return f"{msg} ({where})" if where else msg
+
+
+def notify_main(argv: list[str], stdin: str = "") -> int:
+    """CLI for hooks: mcp-server-telegram-bot notify [--hook] [--chat NAME] [--silent] [TEXT...]"""
+    ap = argparse.ArgumentParser(prog="mcp-server-telegram-bot notify")
+    ap.add_argument("text", nargs="*")
+    ap.add_argument("--hook", action="store_true", help="build the text from Claude Code hook JSON on stdin")
+    ap.add_argument("--chat")
+    ap.add_argument("--silent", action="store_true")
+    a = ap.parse_args(argv)
+    try:
+        text = " ".join(a.text) or (_hook_text(stdin) if a.hook else "")
+        if not text.strip():
+            raise ValueError("no text: pass TEXT or --hook")
+        c = cfg()
+        chat = security.resolve_chat(c, a.chat)
+        for chunk in txt.split_text(_clean(c, text)):
+            data = {"chat_id": chat, "text": chunk, **({"disable_notification": True} if a.silent else {})}
+            asyncio.run(telegram.call(c.token, "sendMessage", data))
+        _log(chat, f"notify chars={len(text)}")
+    except (security.ConfigError, security.DeniedError, telegram.TelegramError, ValueError) as e:
+        print(f"mcp-server-telegram-bot: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> None:
+    if sys.argv[1:2] == ["notify"]:
+        stdin = sys.stdin.read() if "--hook" in sys.argv and not sys.stdin.isatty() else ""  # read only for hooks, or plain `notify TEXT` would hang
+        sys.exit(notify_main(sys.argv[2:], stdin))
     try:
         base()
     except security.ConfigError as e:

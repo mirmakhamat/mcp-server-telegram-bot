@@ -1,4 +1,7 @@
 import asyncio
+import io
+import json
+import sys
 import os
 
 import httpx
@@ -417,3 +420,32 @@ def test_scan_files(tmp_path, monkeypatch):
 def test_bad_scan_mode():
     with pytest.raises(security.ConfigError):
         security.load_config({"TELEGRAM_BOT_TOKEN": "x", "ALLOWED_CHAT_IDS": "1", "SECRET_SCAN": "maybe"})
+
+
+def test_notify_cli(tmp_path, monkeypatch, capsys):
+    server, sent = _server(tmp_path, monkeypatch, "block")
+    assert server.notify_main(["Build", "done"]) == 0
+    assert sent[-1][1]["text"] == "Build done"
+    stop = json.dumps({"hook_event_name": "Stop", "cwd": "/some/project/"})
+    assert server.notify_main(["--hook"], stop) == 0
+    assert sent[-1][1]["text"] == "Task finished (project)"
+    note = json.dumps({"hook_event_name": "Notification", "message": "Claude needs your permission"})
+    assert server.notify_main(["--hook", "--silent"], note) == 0
+    assert sent[-1][1]["text"] == "Claude needs your permission"
+    assert sent[-1][1]["disable_notification"] is True
+    assert server.notify_main(["--hook"], "not json") == 0  # bad hook input still notifies
+    assert sent[-1][1]["text"] == "Claude Code: event"
+    n = len(sent)
+    for argv, err in ((["--chat", "999", "x"], "not in ALLOWED"), ([], "no text"), (["key " + FAKE_TG], "possible secret")):
+        assert server.notify_main(argv) == 1
+        assert err in capsys.readouterr().err
+    assert len(sent) == n
+
+
+def test_notify_dispatch_from_main(tmp_path, monkeypatch):
+    server, sent = _server(tmp_path, monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["prog", "notify", "hello"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    with pytest.raises(SystemExit) as e:
+        server.main()
+    assert e.value.code == 0 and sent[-1][1]["text"] == "hello"

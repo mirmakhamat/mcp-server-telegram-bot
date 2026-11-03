@@ -38,6 +38,21 @@ Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the
 `send_message(text, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `send_generated(name, content, format, caption?, chat_id?)`, `get_updates(limit?)`
 Access management: `list_access()`, `add_chat(chat_id, name?)`, `add_dir(path)`, `remove_chat(chat)`, `remove_dir(path)`
 
+## Automatic notifications (Claude Code hooks)
+The same package has a `notify` command, so you are told when work ends without the agent having to remember. Add to `~/.claude/settings.json` (replace the placeholders):
+
+```json
+{
+  "hooks": {
+    "Stop": [{ "hooks": [{ "type": "command",
+      "command": "uv run --project <project_dir> --env-file <project_dir>/.env mcp-server-telegram-bot notify --hook" }] }],
+    "Notification": [{ "hooks": [{ "type": "command",
+      "command": "uv run --project <project_dir> --env-file <project_dir>/.env mcp-server-telegram-bot notify --hook --silent" }] }]
+  }
+}
+```
+`notify "text"` also works from any shell or script. Options: `--chat <name>`, `--silent`. Exit code is 1 with a message on stderr if sending fails.
+
 ## File access
 1. **Never sent**, whatever env or the agent says: `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `~/.claude*`, browser profiles, keyrings, `/etc`, `/proc`, `/sys`; `.env*`, `.netrc`, `.pgpass`, `.git-credentials`, `.git/config`, `id_*` keys, `*.pem`, `*.key`, `*.p12`, `*.kdbx`, shell history. Paths are resolved with `realpath`, so symlinks and `..` do not help. Add your own with `DENY_PATHS`.
 2. **Sent directly:** files inside the directory the session was started in (not if that is `/` or your home), and inside `ALLOWED_DIRS`.
