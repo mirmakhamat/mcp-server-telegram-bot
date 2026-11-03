@@ -1,10 +1,14 @@
+import os
+import re
 import sys
+from datetime import datetime
 
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel
 
-from . import security, telegram
+from . import pdf, security, telegram
 
+FORMATS = ("pdf", "md", "txt", "csv", "json")
 mcp = FastMCP("telegram")
 _base: security.Config | None = None
 
@@ -28,26 +32,63 @@ async def send_message(text: str, chat_id: str | None = None) -> str:
     return f"sent, message_id={r['message_id']}"
 
 
-async def _send_file(method: str, field: str, path: str, caption: str | None, chat_id: str | None) -> str:
+def _log(chat: str, what: str) -> None:
+    """Append-only record of what was sent where. Never stores file contents."""
+    path = os.path.expanduser(os.environ.get("TELEGRAM_MCP_LOG", "~/.local/state/telegram-mcp/sent.log"))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(f"{datetime.now().isoformat(timespec='seconds')}\tchat={chat}\t{what}\n")
+    except OSError:
+        pass  # logging must never block a send
+
+
+async def _send_file(ctx: Context, method: str, field: str, path: str, caption: str | None, chat_id: str | None) -> str:
     c = cfg()
     chat = security.resolve_chat(c, chat_id)
     real = security.check_path(c, path)
+    if not security.is_inside(c, real):
+        if c.mode == "strict":
+            raise security.DeniedError("file is outside the session directory and ALLOWED_DIRS (ACCESS_MODE=strict)")
+        await _approve(ctx, f"send {real} to chat {chat}")
     data = {"chat_id": chat, **({"caption": caption} if caption else {})}
     with open(real, "rb") as f:
         r = await telegram.call(c.token, method, data, {field: f})
+    _log(chat, f"file={real}")
     return f"sent, message_id={r['message_id']}"
 
 
 @mcp.tool()
-async def send_document(path: str, caption: str | None = None, chat_id: str | None = None) -> str:
-    """Send a file from an allowed directory as a document."""
-    return await _send_file("sendDocument", "document", path, caption, chat_id)
+async def send_document(ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None) -> str:
+    """Send an existing file. Files in the session directory send directly; elsewhere the user is asked. Secrets (.ssh, .env, keys) are always refused."""
+    return await _send_file(ctx, "sendDocument", "document", path, caption, chat_id)
 
 
 @mcp.tool()
-async def send_photo(path: str, caption: str | None = None, chat_id: str | None = None) -> str:
-    """Send an image from an allowed directory as a photo."""
-    return await _send_file("sendPhoto", "photo", path, caption, chat_id)
+async def send_photo(ctx: Context, path: str, caption: str | None = None, chat_id: str | None = None) -> str:
+    """Send an existing image as a photo. Same access rules as send_document."""
+    return await _send_file(ctx, "sendPhoto", "photo", path, caption, chat_id)
+
+
+@mcp.tool()
+async def send_generated(
+    name: str, content: str, format: str = "pdf", caption: str | None = None, chat_id: str | None = None
+) -> str:
+    """Create a file from text and send it; reads nothing from disk. format: pdf, md, txt, csv, json.
+    For a pdf, '# ' / '## ' lines are headings and '- ' lines are bullets. Use it for reports, summaries, logs, tables."""
+    if format not in FORMATS:
+        raise ValueError(f"format must be one of: {', '.join(FORMATS)}")
+    c = cfg()
+    chat = security.resolve_chat(c, chat_id)
+    stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(os.path.basename(name))[0]).strip("._") or "file"
+    filename = f"{stem}.{format}"
+    body = pdf.render(content, title=name if format == "pdf" else None) if format == "pdf" else content.encode()
+    if len(body) > security.MAX_BYTES:
+        raise security.DeniedError("file is larger than 50 MB")
+    data = {"chat_id": chat, **({"caption": caption} if caption else {})}
+    r = await telegram.call(c.token, "sendDocument", data, {"document": (filename, body)})
+    _log(chat, f"generated={filename} bytes={len(body)}")
+    return f"sent {filename}, message_id={r['message_id']}"
 
 
 @mcp.tool()
@@ -115,7 +156,7 @@ async def add_chat(chat_id: str, ctx: Context, name: str | None = None) -> str:
 @mcp.tool()
 async def add_dir(path: str, ctx: Context) -> str:
     """Allow files from another directory (asks the user to confirm)."""
-    real = security.validate_dir(path)
+    real = security.validate_dir(cfg(), path)
     await _approve(ctx, f"send files from {real}")
     return f"added dir {_edit('dirs', real, True)}"
 
@@ -134,7 +175,7 @@ def remove_chat(chat: str) -> str:
 @mcp.tool()
 def remove_dir(path: str) -> str:
     """Remove a directory that was added at runtime."""
-    return f"removed dir {_edit('dirs', security.validate_dir(path), False)}"
+    return f"removed dir {_edit('dirs', security.validate_dir(cfg(), path), False)}"
 
 
 def main() -> None:

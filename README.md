@@ -12,9 +12,10 @@ The token is read from the environment and never reaches the agent.
 claude mcp add telegram \
   -e TELEGRAM_BOT_TOKEN=<token> \
   -e ALLOWED_CHAT_IDS=<chat_id> \
-  -e ALLOWED_DIRS=<dir1>,<dir2> \
   -- uvx mcp-server-telegram-bot
 ```
+
+Use `--scope user` so it works in every folder. When running from a checkout use `uv run --project <dir>` (not `--directory`), otherwise the server cannot see the session directory.
 
 Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the agent to run `get_updates`, then re-register with the real id.
 
@@ -23,7 +24,9 @@ Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Bot token (required) |
 | `ALLOWED_CHAT_IDS` | Comma-separated chats, each `id` or `name=id` (e.g. `me=111,ali=222`); first is default (required) |
-| `ALLOWED_DIRS` | Comma-separated directories files may be sent from. Empty = file sending disabled |
+| `ALLOWED_DIRS` | Extra directories whose files are sent without asking (optional) |
+| `ACCESS_MODE` | `ask` (default): files outside the allowed roots need your confirmation. `strict`: they are refused |
+| `DENY_PATHS` | Extra files/dirs that are never sent (optional) |
 
 ## Typical use
 - "Send `report.pdf` to me when you finish" -> `send_document(path)` to the default chat.
@@ -31,14 +34,19 @@ Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the
 - A person can only receive messages after they open the bot and press Start. Telegram blocks the bot otherwise.
 
 ## Tools
-`send_message(text, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `get_updates(limit?)`
+`send_message(text, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `send_generated(name, content, format, caption?, chat_id?)`, `get_updates(limit?)`
 Access management: `list_access()`, `add_chat(chat_id, name?)`, `add_dir(path)`, `remove_chat(chat)`, `remove_dir(path)`
 
-## Safety
-- Other chat ids are rejected.
-- Paths are resolved with `realpath` (blocks `..` and symlinks) and must be inside `ALLOWED_DIRS`.
-- `.env*`, `.ssh`, `.gnupg`, `.aws` are never sent. Max file size 50 MB.
-- Use one bot per user: two programs polling `getUpdates` on one bot interfere.
+## File access
+1. **Never sent**, whatever env or the agent says: `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `~/.claude*`, browser profiles, keyrings, `/etc`, `/proc`, `/sys`; `.env*`, `.netrc`, `.pgpass`, `.git-credentials`, `.git/config`, `id_*` keys, `*.pem`, `*.key`, `*.p12`, `*.kdbx`, shell history. Paths are resolved with `realpath`, so symlinks and `..` do not help. Add your own with `DENY_PATHS`.
+2. **Sent directly:** files inside the directory the session was started in (not if that is `/` or your home), and inside `ALLOWED_DIRS`.
+3. **Everything else:** you are asked to confirm each time (`ACCESS_MODE=ask`), or it is refused (`strict`).
+
+`send_generated` builds the file from text the agent provides (pdf, md, txt, csv, json) and reads nothing from disk, so it needs no folder access: "send me a PDF of everything you did".
+
+Every send is logged (time, chat, path or file name, never contents) to `~/.local/state/telegram-mcp/sent.log`.
+
+Limits: the deny list cannot know every secret. A password inside an ordinary file in the session directory will be sent if the agent is told to send it. Files go to Telegram's servers. Max 50 MB. Use one bot per user.
 
 ## Changing access from the agent
 - `add_chat` / `add_dir` ask the user to confirm (MCP elicitation). If the client cannot ask, the call is refused.
