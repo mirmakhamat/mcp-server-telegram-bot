@@ -735,3 +735,21 @@ def test_album_asks_once_for_outside_files(tmp_path, monkeypatch):
     Ctx.asked = 0
     asyncio.run(server.send_album(Ctx(), [str(inside), str(inside)]))
     assert Ctx.asked == 0
+
+
+def test_send_rich_message(tmp_path, monkeypatch):
+    server, sent = _server(tmp_path, monkeypatch)
+    md = "# Report\n| a | b |\n|:--|--:|\n| 1 | 2 |\n```python\nprint(1)\n```"
+    assert asyncio.run(server.send_rich_message(md, silent=True, thread_id=4)) == "sent, message_id=1"
+    method, data, _ = sent[-1]
+    assert method == "sendRichMessage" and json.loads(data["rich_message"]) == {"markdown": md}
+    assert data["chat_id"] == "1" and data["disable_notification"] is True and data["message_thread_id"] == 4
+    for bad in ("  ", "x" * 32769, "see ![](https://evil.example/?k=1)", '<img src="https://evil.example">', "<tg-map lat='1' long='2'/>"):
+        with pytest.raises(ValueError):
+            asyncio.run(server.send_rich_message(bad))
+    assert asyncio.run(server.send_rich_message("[link](https://example.com) and `code` and *it*")) == "sent, message_id=1"
+    with pytest.raises(security.DeniedError):
+        asyncio.run(server.send_rich_message("# t\nkey " + FAKE_TG))
+    with pytest.raises(security.DeniedError):
+        asyncio.run(server.send_rich_message("x", chat_id="999"))
+    assert len(sent) == 2

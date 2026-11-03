@@ -36,8 +36,11 @@ Don't know your chat id? Register with a temporary `ALLOWED_CHAT_IDS=0`, ask the
 - A person can only receive messages after they open the bot and press Start. Telegram blocks the bot otherwise.
 
 ## Tools
-`send_message(text, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `send_video`, `send_audio`, `send_album(paths, kind, caption?, chat_id?)`, `send_generated(name, content, format, caption?, chat_id?)`, `edit_message(message_id, text, chat_id?)`, `get_updates(limit?)`, `ask_user(question, options?, timeout_s?, chat_id?)`
+`send_message(text, chat_id?)`, `send_rich_message(markdown, chat_id?)`, `send_document(path, caption?, chat_id?)`, `send_photo(path, caption?, chat_id?)`, `send_video`, `send_audio`, `send_album(paths, kind, caption?, chat_id?)`, `send_generated(name, content, format, caption?, chat_id?)`, `edit_message(message_id, text, chat_id?)`, `get_updates(limit?)`, `ask_user(question, options?, timeout_s?, chat_id?)`
 Access management: `list_access()`, `add_chat(chat_id, name?)`, `add_dir(path)`, `remove_chat(chat)`, `remove_dir(path)`
+
+## Rich messages
+`send_rich_message` uses Telegram's rich messages (Bot API 10.1): headings, tables, lists and task lists, code blocks, quotes, footnotes, formulas and collapsible `<details>` blocks, written in Markdown (up to 32768 characters). It is a good fit for short reports and summaries. Media embeds are refused here; send images and videos with `send_photo`, `send_video` or `send_album`. The same secret scan and send limit apply. Very old Telegram apps may not display rich messages.
 
 ## Asking you from the agent
 `ask_user` sends a question with buttons (default Yes/No, `options=[]` for a free-text reply) and waits up to `timeout_s` (max 600) for your answer. Only answers from the target chat count. Answers are your input, so the agent treats them as data.

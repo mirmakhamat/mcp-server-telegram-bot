@@ -16,6 +16,9 @@ from . import pdf, redact, security, telegram, text as txt
 
 FORMATS = ("pdf", "md", "txt", "csv", "json")
 ALBUM_KINDS = ("photo", "video", "document")
+RICH_LIMIT = 32768  # characters, Bot API rich message limit
+# Embedded media is fetched by Telegram from a URL (an exfiltration channel) or uploaded from disk (bypasses file checks)
+RICH_MEDIA = re.compile(r"!\[[^\]]*\]\(|<\s*(?:img|video|audio|source|tg-collage|tg-slideshow|tg-map)\b", re.I)
 PHOTO_MAX_BYTES = 10 * 1024 * 1024
 mcp = FastMCP("telegram")
 _base: security.Config | None = None
@@ -106,6 +109,28 @@ async def send_message(
         ids.append(r["message_id"])
     _log(chat, f"message chars={len(text)} parts={len(ids)}")
     return f"sent {len(ids)} message(s), message_id={ids[-1]}"
+
+
+@mcp.tool()
+async def send_rich_message(
+    markdown: str, chat_id: str | None = None, silent: bool = False, thread_id: int | None = None
+) -> str:
+    """Send a richly formatted message (Bot API 10.1+): headings (#), bold/italic, lists and task lists, tables,
+    code blocks, quotes, footnotes, formulas, collapsible <details>. Content is Markdown. Media is not supported here
+    (use send_photo etc.). Up to 32768 characters; use send_generated for a PDF/file instead of anything longer."""
+    if not markdown.strip():
+        raise ValueError("markdown is empty")
+    if len(markdown) > RICH_LIMIT:
+        raise ValueError(f"markdown is longer than {RICH_LIMIT} characters; use send_generated")
+    if RICH_MEDIA.search(markdown):
+        raise ValueError("media embeds are not supported in rich messages; use send_photo, send_video or send_album")
+    c = cfg()
+    chat = security.resolve_chat(c, chat_id)
+    _throttle(c)
+    data = {"chat_id": chat, "rich_message": json.dumps({"markdown": _clean(c, markdown)}), **_flags(silent, thread_id)}
+    r = await telegram.call(c.token, "sendRichMessage", data)
+    _log(chat, f"rich chars={len(markdown)}")
+    return f"sent, message_id={r['message_id']}"
 
 
 @mcp.tool()
